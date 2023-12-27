@@ -13,12 +13,14 @@ mod model;
 mod resources;
 mod light;
 mod hdr;
+mod shadow;
 
 use camera::*;
 use model::*;
 use resources::*;
 use light::*;
 use hdr::*;
+use shadow::*;
 
 fn create_render_pipeline(
     device: &wgpu::Device,
@@ -28,11 +30,12 @@ fn create_render_pipeline(
     vertex_layouts: &[wgpu::VertexBufferLayout],
     topology: wgpu::PrimitiveTopology,
     shader: wgpu::ShaderModuleDescriptor,
+    label: &str
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(shader);
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Render Pipeline"),
+        label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module: &shader,
@@ -103,6 +106,7 @@ struct State {
     light_render_pipeline: wgpu::RenderPipeline,
     mouse_pressed: bool,
     hdr: HdrPipeline,
+    shadow:ShadowPipeline,
     environment_bind_group: wgpu::BindGroup,
     sky_pipeline: wgpu::RenderPipeline,
 }
@@ -127,7 +131,6 @@ impl State {
             },
         ).await.unwrap();
 
-        log::warn!("device and queue");
         let (device, queue) = adapter.request_device(
             &wgpu::DeviceDescriptor {
                 features: wgpu::Features::all_webgpu_mask(),
@@ -266,7 +269,7 @@ impl State {
             0.1
         ).await.unwrap();
 
-        // HDR后处理
+        // HDR后处理pipeline
         let hdr = hdr::HdrPipeline::new(&device, &config);
         // 天空球
         let hdr_loader = HdrLoader::new(&device);
@@ -278,6 +281,7 @@ impl State {
             1080,
             Some("Sky Texture"),
         )?;
+
 
         let environment_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -332,10 +336,11 @@ impl State {
                 &[],
                 wgpu::PrimitiveTopology::TriangleList,
                 shader,
+                "skybox pipeline",
             )
         };
 
-        let light_uniform = LightUniform::new([2.0, 4.0, 2.0],0,[3.0, 3.0, 3.0],0);
+        let light_uniform = LightUniform::new([0.0, 5.0, 0.0],0,[6.0, 6.0, 6.0],0);
          // 我们希望能更新光源位置，所以用了 COPY_DST 这个使用范围标志
         let light_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
@@ -355,15 +360,42 @@ impl State {
                         min_binding_size: None,
                     },
                     count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
                 }],
                 label: None,
             });
+
+        let shadow = shadow::ShadowPipeline::new(&device, 1024, &light_uniform);
+
         let light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &light_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: light_buffer.as_entire_binding(),
-            }],
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&shadow.view()),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&shadow.sampler()),
+            },],
             label: None,
         });
 
@@ -387,6 +419,7 @@ impl State {
                 &[model::ModelVertex::desc()],
                 wgpu::PrimitiveTopology::TriangleList,
                 shader,
+                "main pipeline",
             )
         };
 
@@ -408,6 +441,7 @@ impl State {
                 &[model::ModelVertex::desc()],
                 wgpu::PrimitiveTopology::TriangleList,
                 shader,
+                "light pipeline",
             )
         };
 
@@ -434,6 +468,7 @@ impl State {
             light_render_pipeline,
             mouse_pressed: false,
             hdr,
+            shadow,
             environment_bind_group,
             sky_pipeline,
         })
@@ -489,9 +524,15 @@ impl State {
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
 
         // 更新光源
+        
         let old_position: cgmath::Vector3<_> = self.light_uniform.get_position().into();
-        self.light_uniform.set_position((cgmath::Quaternion::from_axis_angle((0.0, 1.0, 0.0).into(), cgmath::Deg(60.0 * dt.as_secs_f32())) * old_position).into());
+
+        self.light_uniform.set_position((cgmath::Quaternion::from_axis_angle((0.0, 0.0, 1.0).into(), cgmath::Deg(60.0 * dt.as_secs_f32() * 0.2)) * old_position).into());
+
         self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&[self.light_uniform]));
+        
+        let new_view = shadow::LightView{proj: self.light_uniform.get_proj()};
+        self.queue.write_buffer(&self.shadow.uniform_buf(), 0, bytemuck::cast_slice(&[new_view]));
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -501,6 +542,9 @@ impl State {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
+
+        self.shadow.process(&mut encoder, &self.obj_model);
+        
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),

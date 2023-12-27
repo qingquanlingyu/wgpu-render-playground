@@ -70,6 +70,7 @@ pub async fn load_model(
             }
         };
 
+        //println!("{:?}",m);
         let normal_texture = match m.normal_texture.len() {
             0=>{
                 texture::Texture::from_color(device, queue, &[0.5,0.5,1.0]).await?

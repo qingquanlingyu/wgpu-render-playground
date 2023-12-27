@@ -16,6 +16,10 @@ struct Light {
 }
 @group(1) @binding(0)
 var<uniform> light: Light;
+@group(1) @binding(1)
+var t_shadow: texture_depth_2d_array;
+@group(1) @binding(2)
+var sampler_shadow: sampler_comparison;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,

@@ -24,7 +24,8 @@ struct VertexOutput {
     @location(1) tangent_position: vec3f,
     @location(2) tangent_light_position: vec3f,
     @location(3) tangent_view_position: vec3f,
-    @location(4) tangent_normal: vec3f,
+    @location(4) world_normal: vec3f,
+    @location(5) world_position: vec3f,
 };
 
 @vertex
@@ -43,11 +44,13 @@ fn vs_main(
     //let world_position = vec4f(model.position, 1.0);
     var out: VertexOutput;
     out.tex_coords = model.tex_coords;
-    out.clip_position = camera.view_proj* vec4<f32>(model.position * model.scale, 1.0);
+    out.clip_position = camera.view_proj * vec4<f32>(model.position * model.scale, 1.0);
     out.tangent_position = tangent_matrix * model.position * model.scale;
     out.tangent_view_position = tangent_matrix * camera.view_pos.xyz;
     out.tangent_light_position = tangent_matrix * light.position;
-    out.tangent_normal = tangent_matrix * world_normal;
+
+    out.world_normal = world_normal;
+    out.world_position = model.position * model.scale;
     return out;
 }
 
@@ -64,9 +67,29 @@ var s_normal: sampler;
 struct Light {
     position: vec3f,
     color: vec3f,
+    proj: mat4x4<f32>,
 }
 @group(2) @binding(0)
 var<uniform> light: Light;
+@group(2) @binding(1)
+var t_shadow: texture_depth_2d;
+@group(2) @binding(2)
+var sampler_shadow: sampler_comparison;
+
+fn fetch_shadow(homogeneous_coords: vec4f) -> f32 
+{
+    if (homogeneous_coords.w <= 0.0) {
+        return 1.0;
+    }
+    // compensate for the Y-flip difference between the NDC and texture coordinates
+    let flip_correction = vec2f(0.5, -0.5);
+    // compute texture coordinates for shadow lookup
+    let proj_correction = 1.0 / homogeneous_coords.w;
+    let light_local = homogeneous_coords.xy * flip_correction * proj_correction + vec2<f32>(0.5, 0.5);
+    // homogeneous_coords.z * proj_correction
+
+    return textureSampleCompareLevel(t_shadow, sampler_shadow, light_local, homogeneous_coords.z * proj_correction);
+}
 
 fn DistributionGGX(N:vec3f, H:vec3f, roughness:f32)->f32
 {
@@ -111,19 +134,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let object_color: vec4f = textureSample(t_diffuse, s_diffuse, in.tex_coords);
     let object_normal: vec4<f32> = textureSample(t_normal, s_normal, in.tex_coords);
 
-    let tangent_normal = normalize(object_normal.xyz * 2.0 - 1.0);
-    //let tangent_normal = normalize(in.tangent_normal);
+    //let normal = normalize(object_normal.xyz * 2.0 - 1.0);
+    let normal = in.world_normal;
 
-    let light_dir = normalize(in.tangent_light_position - in.tangent_position);
-    let view_dir = normalize(in.tangent_view_position - in.tangent_position);
+    // 这个模型不能用法线空间，地面UV疑似有问题😅
+
+    //let light_dir = normalize(in.tangent_light_position - in.tangent_position);
+    //let view_dir = normalize(in.tangent_view_position - in.tangent_position);
+    let light_dir = normalize(light.position - in.world_position);
+    let view_dir = normalize(camera.view_pos.xyz - in.world_position);
+
     let half_dir = normalize(view_dir + light_dir);
     let radianceIn = light.color;
-    let nDotV = max(dot(tangent_normal, view_dir), 0.0);
-    let nDotL = max(dot(tangent_normal, light_dir), 0.0);
+    let nDotV = max(dot(normal, view_dir), 0.0);
+    let nDotL = max(dot(normal, light_dir), 0.0);
 
     //Cook-Torrance BRDF
-    let NDF = DistributionGGX(tangent_normal, half_dir, roughness);
-    let G = GeometrySmith(tangent_normal, nDotV, nDotL, roughness);
+    let NDF = DistributionGGX(normal, half_dir, roughness);
+    let G = GeometrySmith(normal, nDotV, nDotL, roughness);
     let F = fresnelSchlick(max(dot(half_dir, view_dir), 0.0), F0);
 
     let Ks = F;
@@ -133,15 +161,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let specular = numerator / max(denominator, 0.0001);
     let radiance = (Kd * object_color.rgb / PI + specular) * radianceIn.rgb * nDotL;
 
-    let ambient_strength = 0.02;
+    let ambient_strength = 0.01;
     let ambient_color = light.color * object_color.rgb* ambient_strength;
+
+    let shadow = fetch_shadow(light.proj * vec4<f32>(in.world_position, 1.0));
 /*
     let diffuse_strength = max(dot(tangent_normal, light_dir), 0.0);
     let diffuse_color = light.color * object_color.xyz* diffuse_strength;
     let specular_strength = pow(max(dot(tangent_normal, half_dir), 0.0), 32.0);
     let specular_color = specular_strength * light.color;
 */
-    let result = ambient_color + radiance;
+    let result = ambient_color + shadow * radiance;
 
     return vec4<f32>(result, object_color.a);
 }
