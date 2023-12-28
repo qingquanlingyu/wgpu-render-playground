@@ -6,7 +6,7 @@ use winit::{
     window::{WindowBuilder, Window},
     dpi::PhysicalSize
 };
-use wgpu::{util::DeviceExt, Device};
+use wgpu::util::DeviceExt;
 mod texture;
 mod camera;
 mod model;
@@ -283,7 +283,7 @@ impl State {
             Some("Hdr::texture"),
         );
 
-        let bloom = BloomPipeline::new(&device, &config, &output_texture.view);
+        let bloom = BloomPipeline::new(&device, &config, &output_texture);
 
         // HDR后处理pipeline
         let hdr = hdr::HdrPipeline::new(&device, &config, &output_texture, &bloom.texture1);
@@ -514,6 +514,7 @@ impl State {
                 Some("Hdr::texture"),
             );
 
+            self.bloom.resize(&self.device, &self.output_texture, new_size.width, new_size.height);
             self.hdr.resize(&self.device, &self.output_texture, &self.bloom.texture1);
         }
     }

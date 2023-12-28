@@ -56,6 +56,6 @@ var bloom_sampler: sampler;
 fn fs_main(vs: VertexOutput) -> @location(0) vec4<f32> {
     let bloom = textureSample(bloom_image, bloom_sampler, vs.uv);
     let hdr = textureSample(hdr_image, hdr_sampler, vs.uv) + bloom;
-    let sdr = aces_tone_map(hdr.rgb);
+    let sdr = aces_tone_map(bloom.rgb);
     return vec4(sdr, hdr.a);
 }
