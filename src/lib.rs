@@ -6,7 +6,7 @@ use winit::{
     window::{WindowBuilder, Window},
     dpi::PhysicalSize
 };
-use wgpu::util::DeviceExt;
+use wgpu::{util::DeviceExt, Device};
 mod texture;
 mod camera;
 mod model;
@@ -14,6 +14,7 @@ mod resources;
 mod light;
 mod hdr;
 mod shadow;
+mod bloom;
 
 use camera::*;
 use model::*;
@@ -21,6 +22,7 @@ use resources::*;
 use light::*;
 use hdr::*;
 use shadow::*;
+use bloom::*;
 
 fn create_render_pipeline(
     device: &wgpu::Device,
@@ -107,8 +109,10 @@ struct State {
     mouse_pressed: bool,
     hdr: HdrPipeline,
     shadow:ShadowPipeline,
+    bloom:BloomPipeline,
     environment_bind_group: wgpu::BindGroup,
     sky_pipeline: wgpu::RenderPipeline,
+    output_texture: texture::Texture,
 }
 
 impl State {
@@ -269,8 +273,20 @@ impl State {
             0.1
         ).await.unwrap();
 
+        let output_texture = texture::Texture::create_2d_texture(
+            &device,
+            config.width,
+            config.height,
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::FilterMode::Nearest,
+            Some("Hdr::texture"),
+        );
+
+        let bloom = BloomPipeline::new(&device, &config, &output_texture.view);
+
         // HDR后处理pipeline
-        let hdr = hdr::HdrPipeline::new(&device, &config);
+        let hdr = hdr::HdrPipeline::new(&device, &config, &output_texture, &bloom.texture1);
         // 天空球
         let hdr_loader = HdrLoader::new(&device);
         let sky_bytes = load_binary("pure-sky.hdr").await?;
@@ -469,8 +485,10 @@ impl State {
             mouse_pressed: false,
             hdr,
             shadow,
+            bloom,
             environment_bind_group,
             sky_pipeline,
+            output_texture,
         })
     }
 
@@ -486,7 +504,17 @@ impl State {
             self.surface.configure(&self.device, &self.config);
             self.depth_texture = texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
             self.projection.resize(new_size.width, new_size.height);
-            self.hdr.resize(&self.device, new_size.width, new_size.height);
+            self.output_texture = texture::Texture::create_2d_texture(
+                &self.device,
+                new_size.width,
+                new_size.height,
+                wgpu::TextureFormat::Rgba16Float,
+                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                wgpu::FilterMode::Nearest,
+                Some("Hdr::texture"),
+            );
+
+            self.hdr.resize(&self.device, &self.output_texture, &self.bloom.texture1);
         }
     }
 
@@ -551,7 +579,7 @@ impl State {
                 color_attachments: &[
                     // 这就是片元着色器中 [[location(0)]] 对应的目标
                     Some(wgpu::RenderPassColorAttachment {
-                    view: self.hdr.view(),// 渲染到HDR后处理阶段的输入texture中
+                    view: &self.output_texture.view,// 渲染到HDR后处理阶段的输入texture中
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(
@@ -596,7 +624,7 @@ impl State {
             render_pass.set_bind_group(1, &self.environment_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         }
-
+        self.bloom.process(&mut encoder);
         self.hdr.process(&mut encoder, &view);
 
     

@@ -42,14 +42,20 @@ fn vs_main(
 @group(0)
 @binding(0)
 var hdr_image: texture_2d<f32>;
-
 @group(0)
 @binding(1)
 var hdr_sampler: sampler;
+@group(0)
+@binding(2)
+var bloom_image: texture_2d<f32>;
+@group(0)
+@binding(3)
+var bloom_sampler: sampler;
 
 @fragment
 fn fs_main(vs: VertexOutput) -> @location(0) vec4<f32> {
-    let hdr = textureSample(hdr_image, hdr_sampler, vs.uv);
+    let bloom = textureSample(bloom_image, bloom_sampler, vs.uv);
+    let hdr = textureSample(hdr_image, hdr_sampler, vs.uv) + bloom;
     let sdr = aces_tone_map(hdr.rgb);
     return vec4(sdr, hdr.a);
 }

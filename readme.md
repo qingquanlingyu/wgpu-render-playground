@@ -12,5 +12,5 @@ Since this project is related to learnWGPU, if you are from there, you can quick
 - [x] Shadow mapping
 - [ ] Bloom
 - [ ] Use HDR pipeline to implement more postprocessing effects such as FXAA
-- [ ] Advanced PBR
+- [ ] Advanced PBR 
 - [ ] GI🫨
