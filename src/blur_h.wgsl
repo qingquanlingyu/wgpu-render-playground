@@ -29,12 +29,19 @@ var samp: sampler;
 
 @fragment
 fn fs_main(vs: VertexOutput) -> @location(0) vec4<f32> {
-  let texel = textureSample(image, samp, vs.uv);
-  var brightness:f32 = dot(texel.rgb, vec3f(0.2126, 0.7152, 0.0722));
+  // 双线性采样
+  var weight: array<f32, 3> = array<f32, 3>(0.2270270270, 0.3162162162, 0.0702702703);
+  var offset: array<f32, 3> = array<f32, 3>(0.0, 1.3846153846, 3.2307692308);
 
-  if (brightness > 1.0) { // 亮度阈值，可根据需要调整
-    return texel;
-  } else {// 低亮度部分设为黑色
-    return vec4f(0.0, 0.0, 0.0, 1.0);
+  var texel = textureSample(image, samp, vs.uv) * weight[0];
+
+  let tex_size = textureDimensions(image);
+  let offset_base = vec2f(0.0, 1.0) /  vec2f(f32(tex_size.x), f32(tex_size.y));
+
+  for (var i: i32 = 1; i <= 2; i += 1) {
+    let uv_offset = offset_base * offset[i];
+    texel += textureSample(image, samp, vs.uv + uv_offset) * weight[i];
+    texel += textureSample(image, samp, vs.uv - uv_offset) * weight[i];
   }
+  return texel;
 }

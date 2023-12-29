@@ -12,15 +12,14 @@ pub struct BloomPipeline {
     pipeline_pre: wgpu::RenderPipeline,
     bind_group_layout_pre: wgpu::BindGroupLayout,
     bind_group_pre: wgpu::BindGroup,
-    pipeline: wgpu::ComputePipeline,
+    pipeline_w: wgpu::RenderPipeline,
+    pipeline_h: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     bind_group1: wgpu::BindGroup,
     bind_group2: wgpu::BindGroup,
-    workgroup_count: (u32, u32),
     pub texture1: texture::Texture,
     texture2: texture::Texture,
     format: wgpu::TextureFormat,
-    uniform_buf: wgpu::Buffer,
 }
 
 impl BloomPipeline {
@@ -45,13 +44,13 @@ impl BloomPipeline {
             width,
             height,
             format,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
             wgpu::FilterMode::Nearest,
             Some("Pong"),
         );
 
         let bind_group_layout_pre = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Bloom::layout"),
+            label: Some("Bloom::layout_pre"),
             entries: &[
                 // This is the HDR texture
                 wgpu::BindGroupLayoutEntry {
@@ -76,19 +75,10 @@ impl BloomPipeline {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Bloom::layout"),
             entries: &[
+                // This is the HDR texture
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(0),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -97,30 +87,16 @@ impl BloomPipeline {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format,
-                    },
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
         });
 
-        let img_size = [width as i32, height as i32];
-        // 计算工作组大小
-        let workgroup_count = ((width + 15) / 16, (height + 15) / 16);
-        let uniform_buf = device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: None,
-                contents: bytemuck::cast_slice(&[img_size, [1, 0]]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-
         let bind_group_pre = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Bloom::bind_group"),
+            label: Some("Bloom::bind_group_pre"),
             layout: &bind_group_layout_pre,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -140,40 +116,32 @@ impl BloomPipeline {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: uniform_buf.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&texture1.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&texture2.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&texture1.view),
+                    resource: wgpu::BindingResource::Sampler(&texture1.sampler),
                 },
             ],
         });
-
         let bind_group2 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Bloom::bind_group2"),
             layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: uniform_buf.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&texture2.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&texture1.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&texture2.view),
+                    resource: wgpu::BindingResource::Sampler(&texture2.sampler),
                 },
             ],
         });
 
-        let shader1 = wgpu::include_wgsl!("bloom_pre.wgsl");
-        let shader2 = device.create_shader_module(wgpu::include_wgsl!("blur.wgsl"));
+        let shader_pre = wgpu::include_wgsl!("bloom_pre.wgsl");
+        let shader_w = wgpu::include_wgsl!("blur_w.wgsl");
+        let shader_h = wgpu::include_wgsl!("blur_h.wgsl");
 
         let pipeline_layout_pre = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
@@ -189,7 +157,7 @@ impl BloomPipeline {
             // the shader, so we don't need any vertex buffers
             &[],
             wgpu::PrimitiveTopology::TriangleList,
-            shader1,
+            shader_pre,
             "bloom pre pipeline"
         );
 
@@ -198,27 +166,44 @@ impl BloomPipeline {
                 bind_group_layouts: &[&bind_group_layout],
                 push_constant_ranges: &[],
             });
-
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                layout: Some(&pipeline_layout),
-                module: &shader2,
-                entry_point: "cs_main",
-                label: None,
-            });
+        
+        let pipeline_w = create_render_pipeline(
+            device,
+            &pipeline_layout,
+            format,
+            None,
+            // We'll use some math to generate the vertex data in
+            // the shader, so we don't need any vertex buffers
+            &[],
+            wgpu::PrimitiveTopology::TriangleList,
+            shader_w,
+            "bloom pipeline w-direction"
+        );
+        let pipeline_h = create_render_pipeline(
+            device,
+            &pipeline_layout,
+            format,
+            None,
+            // We'll use some math to generate the vertex data in
+            // the shader, so we don't need any vertex buffers
+            &[],
+            wgpu::PrimitiveTopology::TriangleList,
+            shader_h,
+            "bloom pipeline h-direction"
+        );
 
         Self{
             pipeline_pre,
             bind_group_layout_pre,
             bind_group_pre,
             bind_group_layout,
-            pipeline,
+            pipeline_w,
+            pipeline_h,
             bind_group1,
             bind_group2,
-            workgroup_count,
             texture1,
             texture2,
             format,
-            uniform_buf
         }
     }
 
@@ -238,7 +223,7 @@ impl BloomPipeline {
             width,
             height,
             self.format,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
             wgpu::FilterMode::Nearest,
             Some("Pong"),
         );
@@ -262,34 +247,25 @@ impl BloomPipeline {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.uniform_buf.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&self.texture1.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.texture2.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.texture1.view),
+                    resource: wgpu::BindingResource::Sampler(&self.texture1.sampler),
                 },
             ],
         });
-
         self.bind_group2 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Bloom::bind_group2"),
             layout: &self.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.uniform_buf.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&self.texture2.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.texture1.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.texture2.view),
+                    resource: wgpu::BindingResource::Sampler(&self.texture2.sampler),
                 },
             ],
         });
@@ -298,7 +274,7 @@ impl BloomPipeline {
     pub fn process(&self, encoder: &mut wgpu::CommandEncoder) {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Bloom::process"),
+                label: Some("Bloom::process_pre"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.texture1.view,
                     resolve_target: None,
@@ -316,19 +292,45 @@ impl BloomPipeline {
             pass.draw(0..3, 0..1);
         }
         
-        for _ in 0..0 {
+        for _ in 0..6 {
             {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                cpass.set_pipeline(&self.pipeline);
-                cpass.set_bind_group(0, &self.bind_group1, &[]);
-                cpass.dispatch_workgroups(self.workgroup_count.0, self.workgroup_count.1, 1);
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Bloom::process1"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.texture2.view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.pipeline_w);
+                pass.set_bind_group(0, &self.bind_group1, &[]);
+                pass.draw(0..3, 0..1);
             }
 
             {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                cpass.set_pipeline(&self.pipeline);
-                cpass.set_bind_group(0, &self.bind_group2, &[]);
-                cpass.dispatch_workgroups(self.workgroup_count.0, self.workgroup_count.1, 1);
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Bloom::process2"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.texture1.view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.pipeline_h);
+                pass.set_bind_group(0, &self.bind_group2, &[]);
+                pass.draw(0..3, 0..1);
             }
         }
         
