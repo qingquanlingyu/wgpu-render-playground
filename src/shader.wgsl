@@ -134,15 +134,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let object_color: vec4f = textureSample(t_diffuse, s_diffuse, in.tex_coords);
     let object_normal: vec4<f32> = textureSample(t_normal, s_normal, in.tex_coords);
 
-    //let normal = normalize(object_normal.xyz * 2.0 - 1.0);
-    let normal = in.world_normal;
+    let normal = normalize(object_normal.xyz * 2.0 - 1.0);
+    //let normal = vec3f(0.0,0.0,1.0);
+    //let normal = in.world_normal;
 
     // 这个模型不能用法线空间，地面UV疑似有问题😅
 
-    //let light_dir = normalize(in.tangent_light_position - in.tangent_position);
-    //let view_dir = normalize(in.tangent_view_position - in.tangent_position);
-    let light_dir = normalize(light.position - in.world_position);
-    let view_dir = normalize(camera.view_pos.xyz - in.world_position);
+    let light_dir = normalize(in.tangent_light_position - in.tangent_position);
+    let view_dir = normalize(in.tangent_view_position - in.tangent_position);
+    //let light_dir = normalize(light.position - in.world_position);
+    //let view_dir = normalize(camera.view_pos.xyz - in.world_position);
 
     let half_dir = normalize(view_dir + light_dir);
     let radianceIn = light.color;

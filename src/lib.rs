@@ -258,11 +258,11 @@ impl State {
         let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
 
         let obj_model = load_model(
-            "mill.obj",
+            "cube.obj",
             &device,
             &queue,
             &texture_bind_group_layout,
-            3.0
+            1.0
         ).await.unwrap();
 
         let obj_model2 = load_model(

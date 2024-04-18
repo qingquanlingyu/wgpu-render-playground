@@ -1,7 +1,8 @@
 use std::io::{BufReader, Cursor};
 
+use cgmath::{InnerSpace, Vector3};
 use wgpu::util::DeviceExt;
-use image::codecs::hdr::HdrDecoder;
+use image::{codecs::hdr::HdrDecoder, flat::NormalForm};
 
 use crate::{model, texture};
 
@@ -117,9 +118,14 @@ pub async fn load_model(
 
             let indices = &m.mesh.indices;
             let mut triangles_included = vec![0; vertices.len()];
+            
+            //模型uv的u方向在世界空间的朝向，就是物体的切线方向
+            //模型uv的v方向是世界空间的朝向，就是物体的副切线方向
+            //但uv不保证正交
+            //uv二轴在三维平面的投影方向就是三角面片所在的平面，因为顶点法线可以通过平均得到，法线并不一定与其垂直
 
             for c in indices.chunks(3) {
-                // 取前三个必然组成三角形的顶点
+                // 不断取三个相邻的必然必然组成三角形的顶点
                 let v0 = vertices[c[0] as usize];
                 let v1 = vertices[c[1] as usize];
                 let v2 = vertices[c[2] as usize];
@@ -137,29 +143,51 @@ pub async fn load_model(
                 // 计算纹理坐标形成的边，相当于三角形边在二维纹理上的投影
                 let delta_uv1 = uv1 - uv0;
                 let delta_uv2 = uv2 - uv0;
-    
+                
+                
                 // 解如下方程可以得到tangent and bitangent.
-                //     delta_pos1 = delta_uv1.x * T + delta_u.y * B
+                //     delta_pos1 = delta_uv1.x * T + delta_uv1.y * B
                 //     delta_pos2 = delta_uv2.x * T + delta_uv2.y * B
-                //     就是在纹理坐标头像的x和y方向取与法向量垂直且表面平行的T向量和同时垂直于法向量与切向量的B向量
+                //想象一个二维的XY面，法线作为Z轴，构成切线空间
+                //切线T向量，即X轴，与法向量垂直且与表面平行
+                //副切线B向量，即Y轴，同时垂直于法向量与切向量
+
+                //还需要正交化T = normalize(T-(T·N)N)
+                //另一种方法是只计算N
+                //B直接T和N叉乘算
                 let r = 1.0 / (delta_uv1.x * delta_uv2.y - delta_uv1.y * delta_uv2.x);
                 let tangent = (delta_pos1 * delta_uv2.y - delta_pos2 * delta_uv1.y) * r;
                 // 翻转bitangent以满足right-handed normal(右手系)来匹配wgpu的纹理坐标系统
-                let bitangent = (delta_pos2 * delta_uv1.x - delta_pos1 * delta_uv2.x) * -r;
-    
+                // 右手系： X-tangent， Y-bitangent，Z-normal，X叉乘Y=Z
+                // let bitangent = (delta_pos2 * delta_uv1.x - delta_pos1 * delta_uv2.x) * -r;
+
+                //正交化
+                let tangent0 = (tangent - tangent.dot(Vector3::from(v0.normal)) * Vector3::from(v0.normal)).normalize();
+                let tangent1 = (tangent - tangent.dot(Vector3::from(v1.normal)) * Vector3::from(v1.normal)).normalize();
+                let tangent2 = (tangent - tangent.dot(Vector3::from(v2.normal)) * Vector3::from(v2.normal)).normalize();
+
+                //let bitangent0 = bitangent - bitangent.dot(Vector3::from(v0.normal)) * Vector3::from(v0.normal) - bitangent.dot(tangent0) * tangent0;
+                //let bitangent1 = bitangent - bitangent.dot(Vector3::from(v1.normal)) * Vector3::from(v1.normal) - bitangent.dot(tangent1) * tangent1;
+                //let bitangent2 = bitangent - bitangent.dot(Vector3::from(v2.normal)) * Vector3::from(v2.normal) - bitangent.dot(tangent2) * tangent2;
+
+                //bitangent = normal叉乘tangent，但是懒得显式转换了，加负号就行了
+                let bitangent0 = -tangent0.cross(v0.normal.into());
+                let bitangent1 = -tangent1.cross(v1.normal.into());
+                let bitangent2 = -tangent2.cross(v2.normal.into());
+                
                 // 对三角形全部顶点使用
                 vertices[c[0] as usize].tangent =
-                    (tangent + cgmath::Vector3::from(vertices[c[0] as usize].tangent)).into();// 此时这里加的其实就是0
+                    (tangent0 + cgmath::Vector3::from(vertices[c[0] as usize].tangent)).into();// 此时这里加的其实就是0
                 vertices[c[1] as usize].tangent =
-                    (tangent + cgmath::Vector3::from(vertices[c[1] as usize].tangent)).into();
+                    (tangent1 + cgmath::Vector3::from(vertices[c[1] as usize].tangent)).into();
                 vertices[c[2] as usize].tangent =
-                    (tangent + cgmath::Vector3::from(vertices[c[2] as usize].tangent)).into();
+                    (tangent2 + cgmath::Vector3::from(vertices[c[2] as usize].tangent)).into();
                 vertices[c[0] as usize].bitangent =
-                    (bitangent + cgmath::Vector3::from(vertices[c[0] as usize].bitangent)).into();
+                    (bitangent0 + cgmath::Vector3::from(vertices[c[0] as usize].bitangent)).into();
                 vertices[c[1] as usize].bitangent =
-                    (bitangent + cgmath::Vector3::from(vertices[c[1] as usize].bitangent)).into();
+                    (bitangent1 + cgmath::Vector3::from(vertices[c[1] as usize].bitangent)).into();
                 vertices[c[2] as usize].bitangent =
-                    (bitangent + cgmath::Vector3::from(vertices[c[2] as usize].bitangent)).into();
+                    (bitangent2 + cgmath::Vector3::from(vertices[c[2] as usize].bitangent)).into();
     
                 // 用于多次计算平均
                 triangles_included[c[0] as usize] += 1;

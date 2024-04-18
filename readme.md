@@ -14,4 +14,4 @@ Low Poly Mill created by Low Poly Lab
 - [x] Bloom
 - [ ] Use HDR pipeline to implement more postprocessing effects such as FXAA
 - [ ] Advanced PBR 
-- [ ] GI🫨
+- [ ] GI
